@@ -207,6 +207,34 @@ app.post('/enviar-ingresso', async (req, res) => {
     }
 });
 
+app.post('/enviar-voucher', async (req, res) => {
+    const { nomeSessao, numero, urlImagem, textovoucher, mensagem} = req.body;
+
+    if (!sessoes[nomeSessao]) {
+        return res.status(404).json({ status: 'Sessão não encontrada' });
+    }
+
+    try {
+        const client = await sessoes[nomeSessao];
+
+        // Envia a mensagem com a imagem e o texto "Este é seu ingresso"
+        await client.sendFile(
+            `${numero}@c.us`,     // Número do destinatário com código do país
+            urlImagem,            // URL da imagem
+            'voucher.png',       // Nome do arquivo
+            textovoucher        // Texto junto com a imagem
+        );
+
+        // Envia a mensagem do convite
+        await client.sendText(`${numero}@c.us`, mensagem);
+
+        return res.status(200).json({ status: 'Mensagens enviadas com sucesso' });
+    } catch (error) {
+        console.error(`Erro ao enviar mensagens: ${error.message}`);
+        return res.status(500).json({ status: 'Erro ao enviar mensagens', error: error.message });
+    }
+});
+
 // Inicializa o servidor
 app.listen(3000, () => {
     console.log('Servidor rodando na porta 3000');
