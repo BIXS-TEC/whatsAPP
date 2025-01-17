@@ -39,14 +39,8 @@ function criarSessao(nomeSessao, enviarQRCode, atualizarStatus) {
             }
         },
         puppeteerOptions: {
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-extensions',
-                '--user-data-dir=/whats/tokens/' + nomeSessao, // Diretório de perfil único
-            ],
-            executablePath: '/usr/bin/chromium-browser',
-        },
+            userDataDir: `tokens/${nomeSessao}`
+        }
     });    
 
     sessoes[nomeSessao] = sessao;
