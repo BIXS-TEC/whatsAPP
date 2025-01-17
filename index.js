@@ -39,8 +39,14 @@ function criarSessao(nomeSessao, enviarQRCode, atualizarStatus) {
             }
         },
         puppeteerOptions: {
-            userDataDir: `C:/Users/Alexs/OneDrive/Documents/Trabalho/APP/tokens/${nomeSessao}`
-        }
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-extensions',
+                '--user-data-dir=/whats/tokens/' + nomeSessao, // Diretório de perfil único
+            ],
+            executablePath: '/usr/bin/chromium-browser',
+        },
     });    
 
     sessoes[nomeSessao] = sessao;
