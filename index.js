@@ -13,11 +13,10 @@ let estadosSessoes={};
 app.use(express.json());
 
 
-// Função para criar uma sessão e monitorar eventos
-// Função para criar uma sessão e monitorar eventos
 function criarSessao(nomeSessao, enviarQRCode, atualizarStatus) {
     if (sessoes[nomeSessao]) {
         console.log(`Sessão ${nomeSessao} já existe.`);
+        // Verifica se a sessão já está em execução
         return sessoes[nomeSessao];
     }
 
@@ -41,7 +40,7 @@ function criarSessao(nomeSessao, enviarQRCode, atualizarStatus) {
         puppeteerOptions: {
             userDataDir: `tokens/${nomeSessao}`
         }
-    });    
+    });
 
     sessoes[nomeSessao] = sessao;
 
@@ -135,6 +134,11 @@ app.get('/gerar-qrcode/:nomeSessao', (req, res) => {
         sessoes[nomeSessao].then((client) => {
             client.getConnectionState().then((state) => {
                 if (state === 'CONNECTED') {
+                    // Verifica se a resposta já foi enviada antes de tentar enviar outra
+                    if (res.headersSent) {
+                        console.log('Resposta já enviada para /gerar-qrcode.');
+                        return;
+                    }
                     return res.status(200).json({ status: 'Sessão já conectada' });
                 } else {
                     // Aqui geramos o QR Code apenas uma vez
@@ -143,9 +147,19 @@ app.get('/gerar-qrcode/:nomeSessao', (req, res) => {
                         criarSessao(
                             nomeSessao,
                             (qrCode) => {
+                                // Verifica se a resposta já foi enviada antes de tentar enviar outra
+                                if (res.headersSent) {
+                                    console.log('Resposta já enviada para /gerar-qrcode.');
+                                    return;
+                                }
                                 res.status(200).json({ status: 'Aguardando conexão', qrcode: qrCode });
                             },
                             (status) => {
+                                // Verifica se a resposta já foi enviada antes de tentar enviar outra
+                                if (res.headersSent) {
+                                    console.log('Resposta já enviada para /gerar-qrcode.');
+                                    return;
+                                }
                                 res.status(200).json({ status });
                             }
                         );
@@ -155,7 +169,9 @@ app.get('/gerar-qrcode/:nomeSessao', (req, res) => {
                 }
             }).catch((error) => {
                 console.error(`Erro ao verificar estado da sessão ${nomeSessao}:`, error);
-                res.status(500).json({ error: 'Erro ao verificar estado da sessão.' });
+                if (!res.headersSent) {
+                    res.status(500).json({ error: 'Erro ao verificar estado da sessão.' });
+                }
             });
         });
     } else {
@@ -163,9 +179,19 @@ app.get('/gerar-qrcode/:nomeSessao', (req, res) => {
         criarSessao(
             nomeSessao,
             (qrCode) => {
+                // Verifica se a resposta já foi enviada antes de tentar enviar outra
+                if (res.headersSent) {
+                    console.log('Resposta já enviada para /gerar-qrcode.');
+                    return;
+                }
                 res.status(200).json({ status: 'Aguardando conexão', qrcode: qrCode });
             },
             (status) => {
+                // Verifica se a resposta já foi enviada antes de tentar enviar outra
+                if (res.headersSent) {
+                    console.log('Resposta já enviada para /gerar-qrcode.');
+                    return;
+                }
                 res.status(200).json({ status });
             }
         );
