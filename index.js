@@ -38,7 +38,7 @@ function criarSessao(nomeSessao, enviarQRCode, atualizarStatus) {
             }
         },
         puppeteerOptions: {
-            userDataDir: `tokens/${nomeSessao}`
+            userDataDir: `/tokens/${nomeSessao}`
         }
     });
 
