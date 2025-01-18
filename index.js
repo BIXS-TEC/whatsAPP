@@ -11,7 +11,7 @@ app.use(express.json());
 let sessoes = {};
 let estadosSessoes={};
 app.use(express.json());
-
+const sessionPath = `/home/ubuntu//whatsAPP/sessions/${nomeSessao}`;
 
 function criarSessao(nomeSessao, enviarQRCode, atualizarStatus) {
     if (sessoes[nomeSessao]) {
@@ -38,8 +38,13 @@ function criarSessao(nomeSessao, enviarQRCode, atualizarStatus) {
             }
         },
         puppeteerOptions: {
-            userDataDir: `/tokens/${nomeSessao}`
-        }
+            userDataDir: sessionPath,
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+            ],
+            executablePath: '/usr/bin/chromium-browser',
+        },
     });
 
     sessoes[nomeSessao] = sessao;
