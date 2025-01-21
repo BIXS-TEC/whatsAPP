@@ -23,7 +23,7 @@ function criarSessao(nomeSessao, enviarQRCode, atualizarStatus) {
     estadosSessoes[nomeSessao] = { isManualLogout: false };
 
     console.log(`Criando sessão ${nomeSessao}...`);
-    const sessionPath = `/home/ubuntu//whatsAPP/sessions/${nomeSessao}`;
+    const sessionPath = `/home/ubuntu/whatsAPP/sessions/${nomeSessao}`;
     const sessao = wppconnect.create({
         session: nomeSessao,
         catchQR: (qrCode, session) => {
