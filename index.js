@@ -1,7 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const wppconnect = require('@wppconnect-team/wppconnect');
-const PQueue = require('p-queue').default;
+const PQueue = require('p-queue').default; // Importação correta
+const queue = new PQueue({ concurrency: 2 }); // Configuração do PQueue
 
 const app = express();
 
@@ -11,8 +12,6 @@ app.use(express.json());
 
 let sessoes = {}; // Armazena as sessões ativas
 let estadosSessoes = {}; // Armazena o estado de cada sessão
-
-const queue = new PQueue({ concurrency: 2 }); // Limita a criação de 2 sessões simultâneas
 
 function criarSessao(nomeSessao, enviarQRCode, atualizarStatus) {
     if (sessoes[nomeSessao]) {
