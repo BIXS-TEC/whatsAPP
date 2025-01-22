@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const wppconnect = require('@wppconnect-team/wppconnect');
-const PQueue = require('p-queue');
+const PQueue = require('p-queue').default;
 
 const app = express();
 
