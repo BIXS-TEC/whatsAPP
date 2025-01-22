@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const wppconnect = require('@wppconnect-team/wppconnect');
+const PQueue = require('p-queue');
 
 const app = express();
 
@@ -8,27 +9,32 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-let sessoes = {};
-let estadosSessoes={};
-app.use(express.json());
+let sessoes = {}; // Armazena as sessões ativas
+let estadosSessoes = {}; // Armazena o estado de cada sessão
+
+const queue = new PQueue({ concurrency: 2 }); // Limita a criação de 2 sessões simultâneas
 
 function criarSessao(nomeSessao, enviarQRCode, atualizarStatus) {
     if (sessoes[nomeSessao]) {
         console.log(`Sessão ${nomeSessao} já existe.`);
-        // Verifica se a sessão já está em execução
         return sessoes[nomeSessao];
     }
 
-    // Inicializa o estado da sessão com o flag de logout manual
-    estadosSessoes[nomeSessao] = { isManualLogout: false };
+    estadosSessoes[nomeSessao] = { isManualLogout: false, qrCodeEnviado: false };
 
     console.log(`Criando sessão ${nomeSessao}...`);
-    const sessionPath = `/home/ubuntu/whatsAPP/sessions/${nomeSessao}`;
+    const sessionPath = `./tokens/${nomeSessao}`;
     const sessao = wppconnect.create({
         session: nomeSessao,
         catchQR: (qrCode, session) => {
             console.log(`QR Code gerado para a sessão ${session}.`);
-            enviarQRCode(qrCode);
+            if (!estadosSessoes[session]?.qrCodeEnviado) {
+                estadosSessoes[session].qrCodeEnviado = true;
+                enviarQRCode(qrCode);
+                setTimeout(() => {
+                    estadosSessoes[session].qrCodeEnviado = false;
+                }, 60000); // QR Code expira após 60 segundos
+            }
         },
         onQRCodeExpired: (session) => {
             if (!estadosSessoes[session]?.isManualLogout) {
@@ -38,11 +44,16 @@ function criarSessao(nomeSessao, enviarQRCode, atualizarStatus) {
         },
         puppeteerOptions: {
             userDataDir: sessionPath,
+            headless: true,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--no-zygote',
+                '--single-process',
+                '--disable-gpu',
             ],
-            executablePath: '/usr/bin/chromium-browser',
         },
     });
 
@@ -55,12 +66,11 @@ function criarSessao(nomeSessao, enviarQRCode, atualizarStatus) {
             if (state === 'CONNECTED') {
                 atualizarStatus('Conectado com sucesso');
             } else if (state === 'DISCONNECTED') {
-                // Verifique se a desconexão foi manual antes de tentar reconectar
                 if (!estadosSessoes[nomeSessao]?.isManualLogout) {
                     console.log(`Sessão ${nomeSessao} desconectada. Tentando reconectar...`);
                     criarSessao(nomeSessao, enviarQRCode, atualizarStatus);
                 } else {
-                    console.log(`Sessão ${nomeSessao} foi desconectada manualmente. Não tentando reconectar.`);
+                    console.log(`Sessão ${nomeSessao} foi desconectada manualmente.`);
                 }
             }
         });
@@ -73,20 +83,21 @@ function criarSessao(nomeSessao, enviarQRCode, atualizarStatus) {
     return sessao;
 }
 
-// Função para encerrar a sessão manualmente
-// Função para encerrar a sessão manualmente
+// Função com fila para controlar a criação de sessões
+function criarSessaoComFila(nomeSessao, enviarQRCode, atualizarStatus) {
+    return queue.add(() => criarSessao(nomeSessao, enviarQRCode, atualizarStatus));
+}
+
+// Rota para desconectar manualmente uma sessão
 app.get('/desconectar/:nomeSessao', async (req, res) => {
     const nomeSessao = req.params.nomeSessao;
 
     if (sessoes[nomeSessao]) {
         try {
-            // Marca o logout manual para evitar reconexão e geração do QR Code
             estadosSessoes[nomeSessao].isManualLogout = true;
-
             const client = await sessoes[nomeSessao];
-            await client.logout();  // Desconecta a sessão
+            await client.logout();
 
-            // Exclui a sessão após o logout
             delete sessoes[nomeSessao];
             delete estadosSessoes[nomeSessao];
 
@@ -97,40 +108,29 @@ app.get('/desconectar/:nomeSessao', async (req, res) => {
             return res.status(500).json({ error: 'Erro ao encerrar a sessão.' });
         }
     } else {
-        console.log(`Tentativa de encerrar sessão inexistente: ${nomeSessao}`);
         return res.status(404).json({ error: 'Sessão não encontrada.' });
     }
 });
 
-
-app.get('/status-sessao/:nomeSessao', (req, res) => {
+// Rota para verificar o status de uma sessão
+app.get('/status-sessao/:nomeSessao', async (req, res) => {
     const nomeSessao = req.params.nomeSessao;
 
     if (!sessoes[nomeSessao]) {
         return res.status(404).json({ status: 'Sessão não encontrada' });
     }
 
-    sessoes[nomeSessao].then((client) => {
-        client.getConnectionState().then((state) => {
-            if (state === 'CONNECTED') {
-                res.status(200).json({ status: 'Conectado' });
-            } else if (state === 'DISCONNECTED') {
-                res.status(200).json({ status: 'Desconectado' });
-            } else {
-                res.status(200).json({ status: 'Aguardando conexão' });
-            }
-        }).catch((error) => {
-            console.error(`Erro ao verificar estado da sessão ${nomeSessao}:`, error);
-            res.status(500).json({ error: 'Erro ao verificar estado da sessão.' });
-        });
-    }).catch((error) => {
-        console.error(`Erro ao acessar sessão ${nomeSessao}:`, error);
-        res.status(500).json({ error: 'Erro ao acessar sessão.' });
-    });
+    try {
+        const client = await sessoes[nomeSessao];
+        const state = await client.getConnectionState();
+        return res.status(200).json({ status: state });
+    } catch (error) {
+        console.error(`Erro ao verificar estado da sessão ${nomeSessao}:`, error);
+        return res.status(500).json({ error: 'Erro ao verificar estado da sessão.' });
+    }
 });
 
-// Rota para verificar ou gerar QR Code
-// Função para gerar o QR Code e enviar a resposta
+// Rota para gerar ou verificar o QR Code
 app.get('/gerar-qrcode/:nomeSessao', (req, res) => {
     const nomeSessao = req.params.nomeSessao;
 
@@ -138,70 +138,27 @@ app.get('/gerar-qrcode/:nomeSessao', (req, res) => {
         sessoes[nomeSessao].then((client) => {
             client.getConnectionState().then((state) => {
                 if (state === 'CONNECTED') {
-                    // Verifica se a resposta já foi enviada antes de tentar enviar outra
-                    if (res.headersSent) {
-                        console.log('Resposta já enviada para /gerar-qrcode.');
-                        return;
-                    }
                     return res.status(200).json({ status: 'Sessão já conectada' });
                 } else {
-                    // Aqui geramos o QR Code apenas uma vez
-                    if (!client.qrCodeSent) {
-                        client.qrCodeSent = true; // Marca para evitar que o QR Code seja enviado várias vezes
-                        criarSessao(
-                            nomeSessao,
-                            (qrCode) => {
-                                // Verifica se a resposta já foi enviada antes de tentar enviar outra
-                                if (res.headersSent) {
-                                    console.log('Resposta já enviada para /gerar-qrcode.');
-                                    return;
-                                }
-                                res.status(200).json({ status: 'Aguardando conexão', qrcode: qrCode });
-                            },
-                            (status) => {
-                                // Verifica se a resposta já foi enviada antes de tentar enviar outra
-                                if (res.headersSent) {
-                                    console.log('Resposta já enviada para /gerar-qrcode.');
-                                    return;
-                                }
-                                res.status(200).json({ status });
-                            }
-                        );
-                    } else {
-                        console.log(`QR Code já foi enviado para a sessão ${nomeSessao}`);
-                    }
+                    criarSessaoComFila(
+                        nomeSessao,
+                        (qrCode) => res.status(200).json({ status: 'Aguardando conexão', qrcode: qrCode }),
+                        (status) => res.status(200).json({ status })
+                    );
                 }
             }).catch((error) => {
                 console.error(`Erro ao verificar estado da sessão ${nomeSessao}:`, error);
-                if (!res.headersSent) {
-                    res.status(500).json({ error: 'Erro ao verificar estado da sessão.' });
-                }
+                res.status(500).json({ error: 'Erro ao verificar estado da sessão.' });
             });
         });
     } else {
-        // Se a sessão não existe, criamos uma nova sessão e geramos o QR Code
-        criarSessao(
+        criarSessaoComFila(
             nomeSessao,
-            (qrCode) => {
-                // Verifica se a resposta já foi enviada antes de tentar enviar outra
-                if (res.headersSent) {
-                    console.log('Resposta já enviada para /gerar-qrcode.');
-                    return;
-                }
-                res.status(200).json({ status: 'Aguardando conexão', qrcode: qrCode });
-            },
-            (status) => {
-                // Verifica se a resposta já foi enviada antes de tentar enviar outra
-                if (res.headersSent) {
-                    console.log('Resposta já enviada para /gerar-qrcode.');
-                    return;
-                }
-                res.status(200).json({ status });
-            }
+            (qrCode) => res.status(200).json({ status: 'Aguardando conexão', qrcode: qrCode }),
+            (status) => res.status(200).json({ status })
         );
     }
 });
-
 
 app.post('/enviar-ingresso', async (req, res) => {
     const { nomeSessao, numero, urlImagem, textoIngresso, textoConvite, textoConfirmacao } = req.body;
