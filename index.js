@@ -2,7 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const wppconnect = require('@wppconnect-team/wppconnect');
 const PQueue = require('p-queue').default; // Importação correta
-const queue = new PQueue({ concurrency: 2 }); // Configuração do PQueue
+const queue = new PQueue({ concurrency: 1 });// Configuração do PQueue
 
 const app = express();
 
@@ -12,14 +12,38 @@ app.use(express.json());
 
 let sessoes = {}; // Armazena as sessões ativas
 let estadosSessoes = {}; // Armazena o estado de cada sessão
+const locks = {}; 
+function criarSessaoComControle(nomeSessao, enviarQRCode, atualizarStatus) {
+    if (locks[nomeSessao]) {
+        console.log(`Sessão ${nomeSessao} já está sendo recriada.`);
+        return;
+    }
 
+    locks[nomeSessao] = true; // Ativa o lock
+    criarSessaoComFila(nomeSessao, enviarQRCode, atualizarStatus).finally(() => {
+        delete locks[nomeSessao]; // Libera o lock após a recriação
+    });
+}
+
+const criarSessaoComFila = (nomeSessao, enviarQRCode, atualizarStatus) => {
+    return queue.add(() =>
+        new Promise((resolve, reject) => {
+            try {
+                const sessao = criarSessao(nomeSessao, enviarQRCode, atualizarStatus);
+                resolve(sessao);
+            } catch (error) {
+                reject(error);
+            }
+        })
+    );
+};
 function criarSessao(nomeSessao, enviarQRCode, atualizarStatus) {
     if (sessoes[nomeSessao]) {
         console.log(`Sessão ${nomeSessao} já existe.`);
         return sessoes[nomeSessao];
     }
 
-    estadosSessoes[nomeSessao] = { isManualLogout: false, qrCodeEnviado: false };
+    estadosSessoes[nomeSessao] = { isManualLogout: false, qrCode: null };
 
     console.log(`Criando sessão ${nomeSessao}...`);
     const sessionPath = `./tokens/${nomeSessao}`;
@@ -27,18 +51,17 @@ function criarSessao(nomeSessao, enviarQRCode, atualizarStatus) {
         session: nomeSessao,
         catchQR: (qrCode, session) => {
             console.log(`QR Code gerado para a sessão ${session}.`);
-            if (!estadosSessoes[session]?.qrCodeEnviado) {
-                estadosSessoes[session].qrCodeEnviado = true;
+            estadosSessoes[session] = estadosSessoes[session] || {};
+            estadosSessoes[session].qrCode = qrCode; // Atualiza o QR Code
+            if (enviarQRCode) {
                 enviarQRCode(qrCode);
-                setTimeout(() => {
-                    estadosSessoes[session].qrCodeEnviado = false;
-                }, 60000); // QR Code expira após 60 segundos
             }
         },
         onQRCodeExpired: (session) => {
+            console.log(`QR Code expirado para a sessão ${session}.`);
+            estadosSessoes[session].qrCode = null; // Limpa o QR Code
             if (!estadosSessoes[session]?.isManualLogout) {
-                console.log(`QR Code expirado para a sessão ${session}. Gerando outro...`);
-                criarSessao(session, enviarQRCode, atualizarStatus);
+                criarSessaoComControle(session, enviarQRCode, atualizarStatus);
             }
         },
         puppeteerOptions: {
@@ -58,34 +81,32 @@ function criarSessao(nomeSessao, enviarQRCode, atualizarStatus) {
 
     sessoes[nomeSessao] = sessao;
 
-    sessao.then((client) => {
-        console.log(`Sessão ${nomeSessao} criada com sucesso.`);
-        client.onStateChange((state) => {
-            console.log(`Estado da sessão ${nomeSessao}: ${state}`);
-            if (state === 'CONNECTED') {
-                atualizarStatus('Conectado com sucesso');
-            } else if (state === 'DISCONNECTED') {
-                if (!estadosSessoes[nomeSessao]?.isManualLogout) {
-                    console.log(`Sessão ${nomeSessao} desconectada. Tentando reconectar...`);
-                    criarSessao(nomeSessao, enviarQRCode, atualizarStatus);
-                } else {
-                    console.log(`Sessão ${nomeSessao} foi desconectada manualmente.`);
+    sessao
+        .then((client) => {
+            console.log(`Sessão ${nomeSessao} criada com sucesso.`);
+            client.onStateChange((state) => {
+                console.log(`Estado da sessão ${nomeSessao}: ${state}`);
+                if (state === 'CONNECTED') {
+                    atualizarStatus('Conectado com sucesso');
+                } else if (state === 'DISCONNECTED') {
+                    if (!estadosSessoes[nomeSessao]?.isManualLogout) {
+                        console.log(`Sessão ${nomeSessao} desconectada. Tentando reconectar...`);
+                        criarSessao(nomeSessao, enviarQRCode, atualizarStatus);
+                    } else {
+                        console.log(`Sessão ${nomeSessao} foi desconectada manualmente.`);
+                    }
                 }
-            }
+            });
+        })
+        .catch((error) => {
+            console.error(`Erro ao criar sessão ${nomeSessao}:`, error);
+            delete sessoes[nomeSessao];
+            delete estadosSessoes[nomeSessao];
         });
-    }).catch((error) => {
-        console.error(`Erro ao criar sessão ${nomeSessao}:`, error);
-        delete sessoes[nomeSessao];
-        delete estadosSessoes[nomeSessao];
-    });
 
     return sessao;
 }
 
-// Função com fila para controlar a criação de sessões
-function criarSessaoComFila(nomeSessao, enviarQRCode, atualizarStatus) {
-    return queue.add(() => criarSessao(nomeSessao, enviarQRCode, atualizarStatus));
-}
 
 // Rota para desconectar manualmente uma sessão
 app.get('/desconectar/:nomeSessao', async (req, res) => {
@@ -130,32 +151,35 @@ app.get('/status-sessao/:nomeSessao', async (req, res) => {
 });
 
 // Rota para gerar ou verificar o QR Code
-app.get('/gerar-qrcode/:nomeSessao', (req, res) => {
+app.get('/gerar-qrcode/:nomeSessao', async (req, res) => {
     const nomeSessao = req.params.nomeSessao;
 
+    // Verifica se a sessão já existe
     if (sessoes[nomeSessao]) {
-        sessoes[nomeSessao].then((client) => {
-            client.getConnectionState().then((state) => {
-                if (state === 'CONNECTED') {
-                    return res.status(200).json({ status: 'Sessão já conectada' });
-                } else {
-                    criarSessaoComFila(
-                        nomeSessao,
-                        (qrCode) => res.status(200).json({ status: 'Aguardando conexão', qrcode: qrCode }),
-                        (status) => res.status(200).json({ status })
-                    );
-                }
-            }).catch((error) => {
-                console.error(`Erro ao verificar estado da sessão ${nomeSessao}:`, error);
-                res.status(500).json({ error: 'Erro ao verificar estado da sessão.' });
-            });
+        const estado = estadosSessoes[nomeSessao];
+        if (estado.qrCode) {
+            console.log(`QR Code encontrado para a sessão ${nomeSessao}.`);
+            return res.status(200).json({ status: 'Aguardando conexão', qrcode: estado.qrCode });
+        } else {
+            console.log(`QR Code expirado ou não gerado para a sessão ${nomeSessao}.`);
+        }
+    }
+
+    try {
+        // Cria uma nova sessão na fila e espera pelo QR Code
+        const qrCode = await new Promise((resolve, reject) => {
+            criarSessaoComFila(
+                nomeSessao,
+                (qrCode) => resolve(qrCode),
+                (status) => console.log(`Status atualizado: ${status}`)
+            );
         });
-    } else {
-        criarSessaoComFila(
-            nomeSessao,
-            (qrCode) => res.status(200).json({ status: 'Aguardando conexão', qrcode: qrCode }),
-            (status) => res.status(200).json({ status })
-        );
+
+        // Retorna o QR Code gerado
+        res.status(200).json({ status: 'Aguardando conexão', qrcode: qrCode });
+    } catch (error) {
+        console.error(`Erro ao gerar QR Code para a sessão ${nomeSessao}:`, error);
+        res.status(500).json({ error: 'Erro ao gerar QR Code.' });
     }
 });
 
