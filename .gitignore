@@ -1,2 +1,4 @@
 node_modules
 tokens
+.vscode
+main.js
